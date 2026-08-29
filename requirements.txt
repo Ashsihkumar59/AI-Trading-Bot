@@ -1,0 +1,8 @@
+pyTelegramBotAPI
+yfinance
+pandas
+numpy
+stable-baselines3
+ta
+gymnasium
+shimmy
