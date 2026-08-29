@@ -17,7 +17,7 @@ from datetime import datetime
 warnings.filterwarnings('ignore')
 
 # 🔴 APNA TOKEN YAHAN DALO 🔴
-TELEGRAM_BOT_TOKEN = "8819399480:AAHBhgk8ld1I80W2M1wLk2e7VcSa91xZOps" 
+TELEGRAM_BOT_TOKEN = "8819399480:AAGtp_wXJseHHK1rEu_d6bMNbMlULeRAlaQ" 
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 LOG_FILE = "ai_signal_log.csv"
