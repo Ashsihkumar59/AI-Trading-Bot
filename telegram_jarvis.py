@@ -184,7 +184,7 @@ def handle_nse(message):
         bot.reply_to(message, f"📊 **{ticker} Analysis Complete**\n\n🤖 AI Signal: {signal}\n\n*Trade at your own risk, Boss!*")
         
     except Exception as e:
-        bot.reply_to(message, "⚠️ Error Boss! Command aise likho: /nse RELIANCE.NS ya /nse TCS.NS")
+        bot.reply_to(message, f"⚠️ Error Boss! Asli problem yeh hai: {str(e)}")
 
 # --- THE CLOUD KEEP-ALIVE HACK ---
 import threading
