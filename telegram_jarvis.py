@@ -13,6 +13,12 @@ from ta.volatility import AverageTrueRange
 from ta.volume import OnBalanceVolumeIndicator
 import warnings
 from datetime import datetime
+from feature_engine import build_features
+# Apna naya Indian bot load karo
+indian_model = PPO.load("indian_master_bot") 
+
+# Features list jo model ko chahiye
+indian_features = ['RSI', 'MACD', 'MACD_Signal', 'OBV', 'EMA_200', 'SMA_20', 'SMA_50', 'BB_High', 'BB_Low']
 
 warnings.filterwarnings('ignore')
 
@@ -144,6 +150,41 @@ def handle_rel(message):
     bot.reply_to(message, "⏳ Ruko Boss, Reliance ka data check kar raha hu...")
     result_msg = analyze_market("RELIANCE.NS").replace("$", "₹") 
     bot.send_message(message.chat.id, result_msg, parse_mode="Markdown")
+
+@bot.message_handler(commands=['nse'])
+def handle_nse(message):
+    try:
+        # User ka message padho (e.g., "/nse RELIANCE.NS")
+        ticker = message.text.split(" ")[1].upper()
+        bot.reply_to(message, f"🔍 Jarvis Scanning {ticker} on Indian Market...")
+        
+        # Latest data download karo
+        df = yf.download(ticker, period="3mo", interval="1d")
+        
+        # MultiIndex fix (Jo abhi theek kiya tha)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
+        # Naye indicators lagao
+        df = build_features(df)
+        df.dropna(inplace=True)
+        
+        # Aaj ka data AI ko dikhao
+        latest_data = df[indian_features].iloc[-1].values
+        action, _ = indian_model.predict(latest_data)
+        
+        # Signal Decode karo (Assumption: 0=Hold, 1=Buy, 2=Sell)
+        if action == 1:
+            signal = "🟢 STRONG BUY (Market Upar Jayega!)"
+        elif action == 2:
+            signal = "🔴 SELL / SHORT (Market Girega!)"
+        else:
+            signal = "⚪ HOLD (Abhi Shanti Rakho)"
+            
+        bot.reply_to(message, f"📊 **{ticker} Analysis Complete**\n\n🤖 AI Signal: {signal}\n\n*Trade at your own risk, Boss!*")
+        
+    except Exception as e:
+        bot.reply_to(message, "⚠️ Error Boss! Command aise likho: /nse RELIANCE.NS ya /nse TCS.NS")
 
 # --- THE CLOUD KEEP-ALIVE HACK ---
 import threading
