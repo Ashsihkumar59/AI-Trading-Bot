@@ -156,36 +156,58 @@ def handle_nse(message):
     try:
         # User ka message padho (e.g., "/nse RELIANCE.NS")
         ticker = message.text.split(" ")[1].upper()
-        bot.reply_to(message, f"🔍 Jarvis Scanning {ticker} on Indian Market...")
+        bot.reply_to(message, f"🔍 Jarvis Deep Scanning {ticker} on Indian Market...")
         
         # Latest data download karo
         df = yf.download(ticker, period="3mo", interval="1d")
         
-        # MultiIndex fix (Jo abhi theek kiya tha)
+        # MultiIndex fix 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
             
-        # Naye indicators lagao
+        # Naye indicators lagao aur temp file save karo
         df = build_features(df, f"{ticker}_live.csv")
         df.dropna(inplace=True)
+        
+        # --- NAYA PART: DEEP ANALYSIS DATA NIKALNA ---
+        last_row = df.iloc[-1]
+        current_price = last_row['Close']
+        rsi = last_row['RSI']
+        macd = last_row['MACD']
+        ema_200 = last_row['EMA_200']
         
         # Aaj ka data AI ko dikhao
         latest_data = df[indian_features].iloc[-1].values
         action, _ = indian_model.predict(latest_data)
         
-        # Signal Decode karo (Assumption: 0=Hold, 1=Buy, 2=Sell)
+        # Signal Decode karo
         if action == 1:
-            signal = "🟢 STRONG BUY (Market Upar Jayega!)"
+            signal = "🟢 STRONG BUY"
         elif action == 2:
-            signal = "🔴 SELL / SHORT (Market Girega!)"
+            signal = "🔴 SELL / SHORT"
         else:
-            signal = "⚪ HOLD (Abhi Shanti Rakho)"
+            signal = "⚪ HOLD"
             
-        bot.reply_to(message, f"📊 **{ticker} Analysis Complete**\n\n🤖 AI Signal: {signal}\n\n*Trade at your own risk, Boss!*")
+        # --- NAYA PART: PROFESSIONAL TELEGRAM REPORT ---
+        report = f"""📊 **{ticker} DEEP ANALYSIS REPORT** 📊
+
+💰 **Current Price:** ₹{current_price:.2f}
+
+📈 **Technical Indicators:**
+• **RSI (14):** {rsi:.2f} *(>70 Overbought, <30 Oversold)*
+• **MACD:** {macd:.2f}
+• **200 EMA (Macro Trend):** ₹{ema_200:.2f}
+
+🤖 **AI Master Signal:** {signal}
+
+⚠️ *Note: System strictly follows technical data. Please maintain your Risk/Reward ratio.*"""
+            
+        bot.reply_to(message, report)
         
     except Exception as e:
         bot.reply_to(message, f"⚠️ Error Boss! Asli problem yeh hai: {str(e)}")
 
+        
 # --- THE CLOUD KEEP-ALIVE HACK ---
 import threading
 from flask import Flask
