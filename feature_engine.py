@@ -1,66 +1,42 @@
 import pandas as pd
-import numpy as np
-from ta.momentum import RSIIndicator
-from ta.trend import MACD, EMAIndicator
-from ta.volatility import AverageTrueRange
-from ta.volume import OnBalanceVolumeIndicator
+import ta
 
-def build_features(input_file, output_file):
-    print("⚙️ Data Load kar rahe hain... Eagle Eye + Support/Resistance add ho raha hai...")
+def build_features(df, output_file=None):
+    # Data ki copy bana rahe hain taaki koi purana error na aaye
+    data = df.copy()
+
+    # 1. RSI
+    data['RSI'] = ta.momentum.RSIIndicator(close=data['Close'], window=14).rsi()
+
+    # 2. MACD
+    macd = ta.trend.MACD(close=data['Close'])
+    data['MACD'] = macd.macd()
+    data['MACD_Signal'] = macd.macd_signal()
+
+    # 3. OBV (On Balance Volume)
+    if 'Volume' in data.columns:
+        data['OBV'] = ta.volume.OnBalanceVolumeIndicator(close=data['Close'], volume=data['Volume']).on_balance_volume()
+    else:
+        data['OBV'] = 0
+
+    # 4. 200 EMA (Macro Trend)
+    data['EMA_200'] = ta.trend.EMAIndicator(close=data['Close'], window=200).ema_indicator()
+
+    # 5. Baaki Basic Indicators
+    data['SMA_20'] = ta.trend.SMAIndicator(close=data['Close'], window=20).sma_indicator()
+    data['SMA_50'] = ta.trend.SMAIndicator(close=data['Close'], window=50).sma_indicator()
     
-    try:
-        df = pd.read_csv(input_file, index_col=0, parse_dates=True, low_memory=False)
-        
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.droplevel(1)
-            
-        for col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        df.dropna(inplace=True)
-        
-        close, high, low, open_price, volume = df['Close'], df['High'], df['Low'], df['Open'], df['Volume']
-        
-        # --- 1. Basic Indicators & Candlesticks ---
-        df['RSI_14'] = RSIIndicator(close=close, window=14).rsi()
-        macd = MACD(close=close, window_slow=26, window_fast=12, window_sign=9)
-        df['MACD'] = macd.macd()
-        df['EMA_50'] = EMAIndicator(close=close, window=50).ema_indicator()
-        df['ATR_14'] = AverageTrueRange(high=high, low=low, close=close, window=14).average_true_range()
-        
-        df['Body'] = abs(close - open_price)
-        df['Upper_Wick'] = high - np.maximum(open_price, close)
-        df['Lower_Wick'] = np.minimum(open_price, close) - low
-        df['Color'] = np.where(close > open_price, 1, -1)
-        
-        # --- 2. Institutional Volume ---
-        df['OBV'] = OnBalanceVolumeIndicator(close=close, volume=volume).on_balance_volume()
-        rolling_vol = volume.rolling(window=10).mean()
-        df['Volume_Trend'] = np.where(rolling_vol == 0, 1, volume / rolling_vol)
-        
-        # --- 3. 🦅 EAGLE EYE (MACRO TREND) ---
-        print("📈 Macro Trend (200 EMA) Calculate ho raha hai...")
-        ema_200 = EMAIndicator(close=close, window=200).ema_indicator()
-        # Agar price 200 EMA ke upar hai toh 1 (Bullish), warna -1 (Bearish)
-        df['Macro_Trend'] = np.where(close > ema_200, 1, -1)
-        
-        # --- 4. 🧱 SUPPORT & RESISTANCE ---
-        print("🧱 AI ko Support aur Resistance draw karna sikha rahe hain...")
-        # Pichle 20 periods ka High = Resistance, Low = Support
-        rolling_high = high.rolling(window=20).max()
-        rolling_low = low.rolling(window=20).min()
-        
-        # AI ko absolute price nahi, doori (% distance) chahiye hoti hai
-        df['Dist_to_Resistance'] = (rolling_high - close) / close
-        df['Dist_to_Support'] = (close - rolling_low) / close
-        
-        df.dropna(inplace=True)
-        df.to_csv(output_file)
-        
-        print(f"✅ Success! Data is ready with 14 Ultimate Features: {output_file}")
-        
-    except Exception as e:
-        print(f"🚨 System Error: {e}")
+    bb = ta.volatility.BollingerBands(close=data['Close'], window=20, window_dev=2)
+    data['BB_High'] = bb.bollinger_hband()
+    data['BB_Low'] = bb.bollinger_lband()
+    
+    # Missing values ko cover karna
+    data.bfill(inplace=True)
+    data.fillna(0, inplace=True)
 
-if __name__ == "__main__":
-    build_features("reliance_market_data.csv", "reliance_features.csv")
+    # Agar CSV save karni hai toh karega
+    if output_file:
+        data.to_csv(output_file)
+
+    # Yeh dekho, yahan exactly data return ho raha hai!
+    return data
