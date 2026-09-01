@@ -166,7 +166,7 @@ def handle_nse(message):
             df.columns = df.columns.get_level_values(0)
             
         # Naye indicators lagao
-        df = build_features(df)
+        df = build_features(df, f"{ticker}_live.csv")
         df.dropna(inplace=True)
         
         # Aaj ka data AI ko dikhao
