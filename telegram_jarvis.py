@@ -14,6 +14,8 @@ from ta.volume import OnBalanceVolumeIndicator
 import warnings
 from datetime import datetime
 from feature_engine import build_features
+from sentiment_engine import get_news_sentiment
+from paper_trader import log_virtual_trade
 # Apna naya Indian bot load karo
 indian_model = PPO.load("indian_master_bot") 
 
@@ -154,58 +156,71 @@ def handle_rel(message):
 @bot.message_handler(commands=['nse'])
 def handle_nse(message):
     try:
-        # User ka message padho (e.g., "/nse RELIANCE.NS")
         ticker = message.text.split(" ")[1].upper()
-        bot.reply_to(message, f"🔍 Jarvis Deep Scanning {ticker} on Indian Market...")
+        bot.reply_to(message, f"🔍 Jarvis Deep Scanning {ticker}...\n(Technicals + News + Virtual Book)")
         
-        # Latest data download karo
+        # 1. Technical Data Download
         df = yf.download(ticker, period="3mo", interval="1d")
-        
-        # MultiIndex fix 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
             
-        # Naye indicators lagao aur temp file save karo
         df = build_features(df, f"{ticker}_live.csv")
         df.dropna(inplace=True)
         
-        # --- NAYA PART: DEEP ANALYSIS DATA NIKALNA ---
         last_row = df.iloc[-1]
         current_price = last_row['Close']
-        rsi = last_row['RSI']
-        macd = last_row['MACD']
-        ema_200 = last_row['EMA_200']
         
-        # Aaj ka data AI ko dikhao
+        # AI Technical Prediction
         latest_data = df[indian_features].iloc[-1].values
-        action, _ = indian_model.predict(latest_data)
+        tech_action, _ = indian_model.predict(latest_data)
         
-        # Signal Decode karo
-        if action == 1:
-            signal = "🟢 STRONG BUY"
-        elif action == 2:
-            signal = "🔴 SELL / SHORT"
-        else:
-            signal = "⚪ HOLD"
+        # 2. News Sentiment Analysis (Qwen NLP)
+        nlp_score, headlines = get_news_sentiment(ticker)
+        
+        # 3. Pro-Level Decision Logic (The 80% Rule)
+        final_signal = "⚪ HOLD / NO TRADE"
+        action_to_log = None
+        
+        # Agar Tech BUY bole, aur News BURI na ho -> BUY
+        if tech_action == 1 and nlp_score >= 0:
+            final_signal = "🟢 STRONG BUY"
+            action_to_log = "BUY"
+        # Agar Tech SELL bole, aur News ACHI na ho -> SELL
+        elif tech_action == 2 and nlp_score <= 0:
+            final_signal = "🔴 STRONG SELL"
+            action_to_log = "SELL"
+        # Contradiction (Fas gaya matter)
+        elif tech_action == 1 and nlp_score == -1:
+            final_signal = "⚠️ HOLD (Technical Buy, but News Bad)"
+        elif tech_action == 2 and nlp_score == 1:
+            final_signal = "⚠️ HOLD (Technical Sell, but News Good)"
             
-        # --- NAYA PART: PROFESSIONAL TELEGRAM REPORT ---
-        report = f"""📊 **{ticker} DEEP ANALYSIS REPORT** 📊
+        # 4. Virtual Paper Trading Execute
+        trade_msg = "❌ No paper trade taken due to weak/mixed signals."
+        if action_to_log:
+            qty = 10 # Default virtual quantity
+            trade_msg = log_virtual_trade(ticker, action_to_log, current_price, qty)
+            
+        # 5. Telegram Report Generate
+        report = f"""📊 **{ticker} ULTRA-LEVEL REPORT** 📊
 
 💰 **Current Price:** ₹{current_price:.2f}
 
-📈 **Technical Indicators:**
-• **RSI (14):** {rsi:.2f} *(>70 Overbought, <30 Oversold)*
-• **MACD:** {macd:.2f}
-• **200 EMA (Macro Trend):** ₹{ema_200:.2f}
+⚙️ **1. Tech AI Signal:** {'BUY' if tech_action == 1 else 'SELL' if tech_action == 2 else 'HOLD'}
+📰 **2. News Mood:** {'Bullish 🟢' if nlp_score == 1 else 'Bearish 🔴' if nlp_score == -1 else 'Neutral ⚪'}
 
-🤖 **AI Master Signal:** {signal}
+🤖 **MASTER AI DECISION:** {final_signal}
 
-⚠️ *Note: System strictly follows technical data. Please maintain your Risk/Reward ratio.*"""
+💼 **Paper Trade Book:**
+{trade_msg}
+
+📰 *Top Headlines Checked:*
+{headlines}"""
             
         bot.reply_to(message, report)
         
     except Exception as e:
-        bot.reply_to(message, f"⚠️ Error Boss! Asli problem yeh hai: {str(e)}")
+        bot.reply_to(message, f"⚠️ Error Boss: {str(e)}")
 
         
 # --- THE CLOUD KEEP-ALIVE HACK ---
