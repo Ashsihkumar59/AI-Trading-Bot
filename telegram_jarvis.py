@@ -255,6 +255,67 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
+
+@bot.message_handler(commands=['pnl'])
+def check_live_pnl(message):
+    bot.reply_to(message, "🧮 Jarvis is calculating your Live PnL from Cloud...")
+    try:
+        if not os.path.exists("paper_trade_book.csv"):
+            bot.reply_to(message, "❌ Boss, abhi tak koi paper trade nahi liya hai.")
+            return
+
+        # CSV file ko read karo
+        df = pd.read_csv("paper_trade_book.csv")
+        
+        # Har stock ka average price aur total quantity nikalo
+        portfolio = {}
+        for index, row in df.iterrows():
+            ticker = row['Ticker']
+            action = row['Action']
+            qty = row['Quantity']
+            price = row['Price']
+
+            if ticker not in portfolio:
+                portfolio[ticker] = {'qty': 0, 'invested': 0}
+
+            if action == 'BUY':
+                portfolio[ticker]['qty'] += qty
+                portfolio[ticker]['invested'] += (qty * price)
+            elif action == 'SELL':
+                portfolio[ticker]['qty'] -= qty
+                portfolio[ticker]['invested'] -= (qty * price)
+
+        # Telegram PnL Report Generate karo
+        report = "📊 **JARVIS LIVE PORTFOLIO PnL** 📊\n\n"
+        total_pnl = 0
+
+        for ticker, data in portfolio.items():
+            if data['qty'] > 0: # Sirf woh stock dikhao jo abhi account mein hain
+                avg_price = data['invested'] / data['qty']
+                
+                # Live Market Price uthao
+                live_data = yf.download(ticker, period="1d", interval="1m", progress=False)
+                if not live_data.empty:
+                    live_price = float(live_data['Close'].iloc[-1].iloc[0] if isinstance(live_data.columns, pd.MultiIndex) else live_data['Close'].iloc[-1])
+                    
+                    # Profit Calculation
+                    profit = (live_price - avg_price) * data['qty']
+                    total_pnl += profit
+                    
+                    status = "🟢" if profit >= 0 else "🔴"
+                    report += f"🪙 **{ticker}**\n"
+                    report += f"📦 Qty: {data['qty']} | Avg Buy: ₹{avg_price:.2f}\n"
+                    report += f"💵 Live Price: ₹{live_price:.2f}\n"
+                    report += f"{status} **Profit: ₹{profit:.2f}**\n\n"
+
+        report += f"====================\n"
+        final_status = "🚀" if total_pnl >= 0 else "📉"
+        report += f"{final_status} **NET PORTFOLIO PnL: ₹{total_pnl:.2f}**"
+
+        bot.reply_to(message, report)
+
+    except Exception as e:
+        bot.reply_to(message, f"⚠️ Error calculating PnL: {str(e)}")
 if __name__ == "__main__":
     print("🤖 ULTIMATE Jarvis is starting...")
     
