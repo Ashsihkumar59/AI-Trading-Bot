@@ -18,6 +18,9 @@ from sentiment_engine import get_news_sentiment
 from paper_trader import log_virtual_trade
 # Apna naya Indian bot load karo
 indian_model = PPO.load("indian_master_bot") 
+from flask import Flask
+from threading import Thread
+import os
 
 # Features list jo model ko chahiye
 indian_features = ['RSI', 'MACD', 'MACD_Signal', 'OBV', 'EMA_200', 'SMA_20', 'SMA_50', 'BB_High', 'BB_Low']
@@ -222,7 +225,21 @@ def handle_nse(message):
     except Exception as e:
         bot.reply_to(message, f"⚠️ Error Boss: {str(e)}")
 
-        
+
+@bot.message_handler(commands=['book'])
+def send_trade_book(message):
+    bot.reply_to(message, "📂 Fetching your Virtual Trade Book from the Cloud...")
+    try:
+        # Check karna ki file cloud par ban chuki hai ya nahi
+        if os.path.exists("paper_trade_book.csv"):
+            with open("paper_trade_book.csv", "rb") as file:
+                bot.send_document(message.chat.id, file, caption="💼 Le lo Boss, yeh raha tera poora hisaab-kitab!")
+        else:
+            bot.reply_to(message, "❌ Boss, abhi tak Cloud par koi paper trade nahi hua hai.")
+    except Exception as e:
+        bot.reply_to(message, f"⚠️ Error fetching book: {str(e)}")        
+
+    
 # --- THE CLOUD KEEP-ALIVE HACK ---
 import threading
 from flask import Flask
@@ -244,6 +261,9 @@ if __name__ == "__main__":
     # Flask web server ko background thread mein start karo
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
+
+
+    
     
     # Telegram bot ko main thread mein start karo
     bot.polling(none_stop=True)
