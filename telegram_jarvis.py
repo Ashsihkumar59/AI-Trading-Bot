@@ -1,330 +1,304 @@
-import sys
-sys.stdout.reconfigure(encoding='utf-8')
 import telebot
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import csv
 import os
+import threading
+from flask import Flask
 from stable_baselines3 import PPO
+import warnings
+
+# Custom Modules
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator
 from ta.volatility import AverageTrueRange
 from ta.volume import OnBalanceVolumeIndicator
-import warnings
-from datetime import datetime
-from feature_engine import build_features
-from sentiment_engine import get_news_sentiment
-from paper_trader import log_virtual_trade
-# Apna naya Indian bot load karo
-indian_model = PPO.load("indian_master_bot") 
-from flask import Flask
-from threading import Thread
-import os
-
-# Features list jo model ko chahiye
-indian_features = ['RSI', 'MACD', 'MACD_Signal', 'OBV', 'EMA_200', 'SMA_20', 'SMA_50', 'BB_High', 'BB_Low']
+from risk_engine import calculate_position_size, check_rrr_gatekeeper
+from market_context import get_macro_trend, get_sector_trend
+from price_action import get_live_patterns
 
 warnings.filterwarnings('ignore')
 
-# 🔴 APNA TOKEN YAHAN DALO 🔴
-TELEGRAM_BOT_TOKEN = "8819399480:AAGtp_wXJseHHK1rEu_d6bMNbMlULeRAlaQ" 
-
+TELEGRAM_BOT_TOKEN = "8819399480:AAGtp_wXJseHHK1rEu_d6bMNbMlULeRAlaQ"
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-LOG_FILE = "ai_signal_log.csv"
 
-def log_trade_signal(date, ticker, price, action_hint, sl, tp):
-    file_exists = os.path.isfile(LOG_FILE)
-    with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
-        if not file_exists:
-            writer.writerow(['Date_Time', 'Ticker', 'Price', 'Signal', 'Stop_Loss', 'Take_Profit'])
-        writer.writerow([date, ticker, price, action_hint, sl, tp])
+app = Flask(__name__)
+@app.route('/')
+def home():
+    return "🤖 Jarvis Ultra-Pro is Alive on the Cloud!"
 
-def analyze_market(ticker):
-    try:
-        model = PPO.load("trained_reliance_bot")
-        # Crypto ke liye recent 100 days ka data chahiye S&R nikalne ke liye
-        df = yf.download(ticker, period="100d", interval="1h", progress=False)
-        
-        if df.empty:
-            return f"❌ Data nahi mila {ticker} ke liye."
-            
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.droplevel(1)
-        for col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        df.dropna(inplace=True)
-        
-        close, high, low, open_price, volume = df['Close'], df['High'], df['Low'], df['Open'], df['Volume']
-        
-        # --- 1. Basic Indicators ---
-        df['RSI_14'] = RSIIndicator(close=close, window=14).rsi()
-        df['MACD'] = MACD(close=close, window_slow=26, window_fast=12, window_sign=9).macd()
-        df['EMA_50'] = EMAIndicator(close=close, window=50).ema_indicator()
-        df['ATR_14'] = AverageTrueRange(high=high, low=low, close=close, window=14).average_true_range()
-        
-        # --- 2. Candlesticks ---
-        df['Body'] = abs(close - open_price)
-        df['Upper_Wick'] = high - np.maximum(open_price, close)
-        df['Lower_Wick'] = np.minimum(open_price, close) - low
-        df['Color'] = np.where(close > open_price, 1, -1)
-        
-        # --- 3. Institutional Volume ---
-        df['OBV'] = OnBalanceVolumeIndicator(close=close, volume=volume).on_balance_volume()
-        rolling_vol = volume.rolling(window=10).mean()
-        df['Volume_Trend'] = np.where(rolling_vol == 0, 1, volume / rolling_vol)
-        
-        # --- 4. 🦅 EAGLE EYE & S/R (THE NEW UPGRADES) ---
-        ema_200 = EMAIndicator(close=close, window=200).ema_indicator()
-        df['Macro_Trend'] = np.where(close > ema_200, 1, -1)
-        
-        rolling_high = high.rolling(window=20).max()
-        rolling_low = low.rolling(window=20).min()
-        df['Dist_to_Resistance'] = (rolling_high - close) / close
-        df['Dist_to_Support'] = (close - rolling_low) / close
-        
-        df.dropna(inplace=True)
-        latest_data = df.iloc[-1]
-        
-        # 🚨 THE ULTIMATE 14 FEATURES 🚨
-        features = [
-            'Close', 'RSI_14', 'MACD', 'EMA_50', 'ATR_14', 'Body', 
-            'Upper_Wick', 'Lower_Wick', 'Color', 'OBV', 'Volume_Trend', 
-            'Macro_Trend', 'Dist_to_Resistance', 'Dist_to_Support'
-        ]
-        
-        obs = latest_data[features].values.astype(np.float32)
-        
-        action, _ = model.predict(obs)
-        action_val = int(action)
-        
-        ltp = latest_data['Close']
-        atr_val = latest_data['ATR_14']
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        stop_loss = 0
-        take_profit = 0
-        
-        if action_val == 1:
-            hint = "🚀 BUY SIGNAL"
-            stop_loss = ltp - (1.5 * atr_val)
-            take_profit = ltp + (3.0 * atr_val)
-        elif action_val == 2:
-            hint = "💸 SELL SIGNAL"
-            stop_loss = ltp + (1.5 * atr_val)
-            take_profit = ltp - (3.0 * atr_val)
-        else:
-            hint = "✋ HOLD / WAIT"
-            
-        macro_status = "🟢 Bullish" if latest_data['Macro_Trend'] == 1 else "🔴 Bearish"
-        
-        msg = (
-            f"🤖 *ULTIMATE AI ANALYSIS (14-Point Radar)* 🤖\n\n"
-            f"🪙 *Asset:* {ticker}\n"
-            f"💵 *Price:* ${ltp:,.2f}\n"
-            f"📈 *Macro Trend (200 EMA):* {macro_status}\n"
-            f"📊 *RSI:* {latest_data['RSI_14']:.1f} | 🌊 *Vol:* {latest_data['Volume_Trend']:.1f}x\n"
-            f"🎯 *ACTION:* {hint}\n"
-        )
-        
-        if action_val != 0:
-            msg += (
-                f"\n🛡️ *Stop-Loss:* ${stop_loss:,.2f}\n"
-                f"💰 *Target:* ${take_profit:,.2f}\n"
-            )
-            
-        log_trade_signal(current_time, ticker, round(ltp, 2), hint, round(stop_loss, 2), round(take_profit, 2))
-        return msg
+def run_flask():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
-    except Exception as e:
-        return f"🚨 Error analyzing {ticker}: {e}"
+try:
+    model = PPO.load("nifty_10yr_master_bot")
+    print("🧠 Master Bot Brain Loaded Successfully!")
+except Exception as e:
+    print(f"⚠️ Model load error: {e}")
+
+def calculate_14_features(ticker):
+    df = yf.download(ticker, period="1y", interval="1d", progress=False)
+    if df.empty:
+        return None, 0
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.droplevel(1)
+        
+    close, high, low = df['Close'], df['High'], df['Low']
+    open_price, volume = df['Open'], df['Volume']
+    
+    df['RSI_14'] = RSIIndicator(close=close, window=14).rsi()
+    df['MACD'] = MACD(close=close, window_slow=26, window_fast=12, window_sign=9).macd()
+    df['EMA_50'] = EMAIndicator(close=close, window=50).ema_indicator()
+    df['ATR_14'] = AverageTrueRange(high=high, low=low, close=close, window=14).average_true_range()
+    
+    df['Body'] = abs(close - open_price)
+    df['Upper_Wick'] = high - np.maximum(open_price, close)
+    df['Lower_Wick'] = np.minimum(open_price, close) - low
+    df['Color'] = np.where(close > open_price, 1, -1)
+    
+    df['OBV'] = OnBalanceVolumeIndicator(close=close, volume=volume).on_balance_volume()
+    rolling_vol = volume.rolling(window=10).mean()
+    df['Volume_Trend'] = np.where(rolling_vol == 0, 1, volume / rolling_vol)
+    
+    ema_200 = EMAIndicator(close=close, window=200).ema_indicator()
+    df['Macro_Trend'] = np.where(close > ema_200, 1, -1)
+    
+    rolling_high = high.rolling(window=20).max()
+    rolling_low = low.rolling(window=20).min()
+    df['Dist_to_Resistance'] = (rolling_high - close) / close
+    df['Dist_to_Support'] = (close - rolling_low) / close
+    
+    df.dropna(inplace=True)
+    
+    features_list = [
+        'Close', 'RSI_14', 'MACD', 'EMA_50', 'ATR_14', 'Body', 
+        'Upper_Wick', 'Lower_Wick', 'Color', 'OBV', 'Volume_Trend', 
+        'Macro_Trend', 'Dist_to_Resistance', 'Dist_to_Support'
+    ]
+    
+    latest_data = df.iloc[-1][features_list].values.astype(np.float32)
+    latest_data = np.nan_to_num(latest_data)
+    
+    current_price = df.iloc[-1]['Close']
+    return latest_data, current_price
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "👋 Hello Boss! Main aapka Ultimate AI Trading Assistant hu.\n\nKise analyze karna hai? Type karo:\n`/btc` - Bitcoin ke liye\n`/rel` - Reliance ke liye")
-
-@bot.message_handler(commands=['btc'])
-def handle_btc(message):
-    bot.reply_to(message, "⏳ Ruko Boss, Bitcoin ka 14-point data check kar raha hu...")
-    result_msg = analyze_market("BTC-USD")
-    bot.send_message(message.chat.id, result_msg, parse_mode="Markdown")
-
-@bot.message_handler(commands=['rel'])
-def handle_rel(message):
-    bot.reply_to(message, "⏳ Ruko Boss, Reliance ka data check kar raha hu...")
-    result_msg = analyze_market("RELIANCE.NS").replace("$", "₹") 
-    bot.send_message(message.chat.id, result_msg, parse_mode="Markdown")
+    bot.reply_to(message, "🚀 **JARVIS ULTRA-PRO ONLINE**\n\nCommands:\n👉 `/nse RELIANCE.NS` - AI Trade Analysis", parse_mode='Markdown')
 
 @bot.message_handler(commands=['nse'])
-def handle_nse(message):
+def analyze_stock(message):
     try:
-        ticker = message.text.split(" ")[1].upper()
-        bot.reply_to(message, f"🔍 Jarvis Deep Scanning {ticker}...\n(Technicals + News + Virtual Book)")
-        
-        # 1. Technical Data Download
-        df = yf.download(ticker, period="3mo", interval="1d")
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-            
-        df = build_features(df, f"{ticker}_live.csv")
-        df.dropna(inplace=True)
-        
-        last_row = df.iloc[-1]
-        current_price = last_row['Close']
-        
-        # AI Technical Prediction
-        latest_data = df[indian_features].iloc[-1].values
-        tech_action, _ = indian_model.predict(latest_data)
-        
-        # 2. News Sentiment Analysis (Qwen NLP)
-        nlp_score, headlines = get_news_sentiment(ticker)
-        
-        # 3. Pro-Level Decision Logic (The 80% Rule)
-        final_signal = "⚪ HOLD / NO TRADE"
-        action_to_log = None
-        
-        # Agar Tech BUY bole, aur News BURI na ho -> BUY
-        if tech_action == 1 and nlp_score >= 0:
-            final_signal = "🟢 STRONG BUY"
-            action_to_log = "BUY"
-        # Agar Tech SELL bole, aur News ACHI na ho -> SELL
-        elif tech_action == 2 and nlp_score <= 0:
-            final_signal = "🔴 STRONG SELL"
-            action_to_log = "SELL"
-        # Contradiction (Fas gaya matter)
-        elif tech_action == 1 and nlp_score == -1:
-            final_signal = "⚠️ HOLD (Technical Buy, but News Bad)"
-        elif tech_action == 2 and nlp_score == 1:
-            final_signal = "⚠️ HOLD (Technical Sell, but News Good)"
-            
-        # 4. Virtual Paper Trading Execute
-        trade_msg = "❌ No paper trade taken due to weak/mixed signals."
-        if action_to_log:
-            qty = 10 # Default virtual quantity
-            trade_msg = log_virtual_trade(ticker, action_to_log, current_price, qty)
-            
-        # 5. Telegram Report Generate
-        report = f"""📊 **{ticker} ULTRA-LEVEL REPORT** 📊
-
-💰 **Current Price:** ₹{current_price:.2f}
-
-⚙️ **1. Tech AI Signal:** {'BUY' if tech_action == 1 else 'SELL' if tech_action == 2 else 'HOLD'}
-📰 **2. News Mood:** {'Bullish 🟢' if nlp_score == 1 else 'Bearish 🔴' if nlp_score == -1 else 'Neutral ⚪'}
-
-🤖 **MASTER AI DECISION:** {final_signal}
-
-💼 **Paper Trade Book:**
-{trade_msg}
-
-📰 *Top Headlines Checked:*
-{headlines}"""
-            
-        bot.reply_to(message, report)
-        
-    except Exception as e:
-        bot.reply_to(message, f"⚠️ Error Boss: {str(e)}")
-
-
-@bot.message_handler(commands=['book'])
-def send_trade_book(message):
-    bot.reply_to(message, "📂 Fetching your Virtual Trade Book from the Cloud...")
-    try:
-        # Check karna ki file cloud par ban chuki hai ya nahi
-        if os.path.exists("paper_trade_book.csv"):
-            with open("paper_trade_book.csv", "rb") as file:
-                bot.send_document(message.chat.id, file, caption="💼 Le lo Boss, yeh raha tera poora hisaab-kitab!")
-        else:
-            bot.reply_to(message, "❌ Boss, abhi tak Cloud par koi paper trade nahi hua hai.")
-    except Exception as e:
-        bot.reply_to(message, f"⚠️ Error fetching book: {str(e)}")        
-
-    
-# --- THE CLOUD KEEP-ALIVE HACK ---
-import threading
-from flask import Flask
-import os
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🤖 Jarvis is Alive on the Cloud!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-
-@bot.message_handler(commands=['pnl'])
-def check_live_pnl(message):
-    bot.reply_to(message, "🧮 Jarvis is calculating your Live PnL from Cloud...")
-    try:
-        if not os.path.exists("paper_trade_book.csv"):
-            bot.reply_to(message, "❌ Boss, abhi tak koi paper trade nahi liya hai.")
+        command_parts = message.text.split()
+        if len(command_parts) < 2:
+            bot.reply_to(message, "❌ Sahi format: `/nse RELIANCE.NS`")
             return
-
-        # CSV file ko read karo
-        df = pd.read_csv("paper_trade_book.csv")
+            
+        ticker = command_parts[1].upper()
+        bot.reply_to(message, f"🔍 Scanning 14-Point Radar for {ticker}...")
         
-        # Har stock ka average price aur total quantity nikalo
-        portfolio = {}
-        for index, row in df.iterrows():
-            ticker = row['Ticker']
-            action = row['Action']
-            qty = row['Quantity']
-            price = row['Price']
+        live_features, current_price = calculate_14_features(ticker)
+        if live_features is None:
+            bot.reply_to(message, "❌ Data nahi mila. Ticker check kar.")
+            return
+            
+        action_code, _ = model.predict(live_features, deterministic=True)
+        tech_signal = "BUY 🟢" if action_code == 1 else "SELL 🔴" if action_code == 2 else "HOLD ⚪"
+        
+        final_decision = f"STRONG {tech_signal}" if "BUY" in tech_signal else tech_signal
+        trade_logged = ""
+        
+        if action_code in [1, 2]: 
+            action_str = "BUY" if action_code == 1 else "SELL"
+            macro_trend = get_macro_trend(ticker)
+            trend_str = "UP 🟢" if macro_trend == 1 else "DOWN 🔴" if macro_trend == -1 else "NEUTRAL ⚪"
+            
+            sector_trend, sector_name = get_sector_trend(ticker)
+            sector_str = "UP 🟢" if sector_trend == 1 else "DOWN 🔴" if sector_trend == -1 else "NEUTRAL ⚪"
+            
+            mtf_approved = True
+            reject_reason = ""
+            
+            # S/R Wall Check 🧱 (Naya feature)
+            dist_to_res = live_features[12]
+            dist_to_sup = live_features[13]
+            
+            if action_code == 1 and dist_to_res < 0.01:
+                mtf_approved = False
+                reject_reason = "Too close to Major Resistance Wall 🧱"
+            elif action_code == 2 and dist_to_sup < 0.01:
+                mtf_approved = False
+                reject_reason = "Too close to Major Support Wall 🧱"
+            
+            # Trend Check
+            if mtf_approved:
+                if action_code == 1 and macro_trend == -1:
+                    mtf_approved = False
+                    reject_reason = f"Against 1H Macro Trend ({trend_str})"
+                elif action_code == 2 and macro_trend == 1:
+                    mtf_approved = False
+                    reject_reason = f"Against 1H Macro Trend ({trend_str})"
+                    
+            # Sector Check
+            if mtf_approved: 
+                if action_code == 1 and sector_trend == -1:
+                    mtf_approved = False
+                    reject_reason = f"Against {sector_name} Sector Trend ({sector_str})"
+                elif action_code == 2 and sector_trend == 1:
+                    mtf_approved = False
+                    reject_reason = f"Against {sector_name} Sector Trend ({sector_str})"
 
-            if ticker not in portfolio:
-                portfolio[ticker] = {'qty': 0, 'invested': 0}
-
-            if action == 'BUY':
-                portfolio[ticker]['qty'] += qty
-                portfolio[ticker]['invested'] += (qty * price)
-            elif action == 'SELL':
-                portfolio[ticker]['qty'] -= qty
-                portfolio[ticker]['invested'] -= (qty * price)
-
-        # Telegram PnL Report Generate karo
-        report = "📊 **JARVIS LIVE PORTFOLIO PnL** 📊\n\n"
-        total_pnl = 0
-
-        for ticker, data in portfolio.items():
-            if data['qty'] > 0: # Sirf woh stock dikhao jo abhi account mein hain
-                avg_price = data['invested'] / data['qty']
+            if not mtf_approved:
+                final_decision = f"REJECTED 🚫 ({reject_reason}. Changed to HOLD ⚪)"
+                trade_logged = f"\n❌ Trade Rejected by Context Radar:\n📡 Reason: {reject_reason}"
+            else:
+                account_balance = 100000  
+                atr_value = live_features[4]  
                 
-                # Live Market Price uthao
-                live_data = yf.download(ticker, period="1d", interval="1m", progress=False)
-                if not live_data.empty:
-                    live_price = float(live_data['Close'].iloc[-1].iloc[0] if isinstance(live_data.columns, pd.MultiIndex) else live_data['Close'].iloc[-1])
+                if action_code == 1: 
+                    sl_price = current_price - (1.5 * atr_value)
+                    target_price = current_price + (3.0 * atr_value) 
+                else: 
+                    sl_price = current_price + (1.5 * atr_value)
+                    target_price = current_price - (3.0 * atr_value)
                     
-                    # Profit Calculation
-                    profit = (live_price - avg_price) * data['qty']
-                    total_pnl += profit
+                is_approved, current_rrr = check_rrr_gatekeeper(current_price, sl_price, target_price)
+                
+                if not is_approved:
+                    final_decision = f"REJECTED 🚫 (Poor RRR: 1:{current_rrr:.2f}. Changed to HOLD ⚪)"
+                    trade_logged = "\n❌ Trade Rejected by Risk Gatekeeper."
+                else:
+                    qty = calculate_position_size(account_balance, current_price, sl_price)
                     
-                    status = "🟢" if profit >= 0 else "🔴"
-                    report += f"🪙 **{ticker}**\n"
-                    report += f"📦 Qty: {data['qty']} | Avg Buy: ₹{avg_price:.2f}\n"
-                    report += f"💵 Live Price: ₹{live_price:.2f}\n"
-                    report += f"{status} **Profit: ₹{profit:.2f}**\n\n"
+                    # 🛠️ UPGRADED EXCEL SHEET (SL, Target aur Status ke sath)
+                    trade_data = pd.DataFrame([[pd.Timestamp.now(), ticker, action_str, qty, current_price, sl_price, target_price, "OPEN"]],
+                                              columns=['Date', 'Ticker', 'Action', 'Quantity', 'Entry_Price', 'SL', 'Target', 'Status'])
+                    file_name = "paper_trade_book.csv"
+                    
+                    if not os.path.isfile(file_name):
+                        trade_data.to_csv(file_name, index=False)
+                    else:
+                        trade_data.to_csv(file_name, mode='a', header=False, index=False)
+                        
+                    trade_logged = f"\n✅ Paper Trade Logged: {action_str} {qty} Qty of {ticker} @ ₹{current_price:.2f}\n📡 {sector_name}: {sector_str} | 1H Trend: {trend_str}\n🛡️ SL: ₹{sl_price:.2f} | 🎯 Target: ₹{target_price:.2f}"
 
-        report += f"====================\n"
-        final_status = "🚀" if total_pnl >= 0 else "📉"
-        report += f"{final_status} **NET PORTFOLIO PnL: ₹{total_pnl:.2f}**"
+        # Module 3: Price Action Data fetch
+        daily_df = yf.download(ticker, period="1mo", interval="1d", progress=False)
+        if isinstance(daily_df.columns, pd.MultiIndex):
+            daily_df.columns = daily_df.columns.droplevel(1)
+            
+        detected_patterns = get_live_patterns(daily_df)
+        patterns_str = "\n".join([f"   👉 {p}" for p in detected_patterns])
 
+        # Final Report Build
+        report = f"""📊 {ticker} ULTRA-LEVEL REPORT 📊
+
+💰 Current Price: ₹{current_price:.2f}
+
+👁️ 3. Price Action & Volume:
+{patterns_str}
+
+⚙️ 1. Tech AI Signal: {tech_signal}
+📰 2. News Mood: Neutral ⚪
+
+🤖 MASTER AI DECISION: {final_decision}
+{trade_logged}
+"""
         bot.reply_to(message, report)
-
+        
     except Exception as e:
-        bot.reply_to(message, f"⚠️ Error calculating PnL: {str(e)}")
+        bot.reply_to(message, f"⚠️ Error: {str(e)}")
+
+
+
+# ==========================================
+# 🛡️ 4. LIVE POSITION MANAGER (TRAILING ENGINE)
+# ==========================================
+active_chats = set()
+
+@bot.message_handler(commands=['start_manager'])
+def start_manager(message):
+    chat_id = message.chat.id
+    if chat_id not in active_chats:
+        active_chats.add(chat_id)
+        bot.reply_to(message, "🛡️ **Live Position Manager Started!**\nJarvis is now watching your trades 24/7. Risk management is fully AUTOMATED! 😎", parse_mode='Markdown')
+        threading.Thread(target=position_manager_loop, args=(chat_id,), daemon=True).start()
+    else:
+        bot.reply_to(message, "⚠️ Manager is already running in the background!")
+
+def position_manager_loop(chat_id):
+    import time
+    while True:
+        try:
+            if os.path.exists("paper_trade_book.csv"):
+                df = pd.read_csv("paper_trade_book.csv")
+                changes_made = False
+
+                for index, row in df.iterrows():
+                    if row['Status'] == 'OPEN':
+                        ticker = row['Ticker']
+                        action = row['Action']
+                        entry_price = float(row['Entry_Price'])
+                        sl_price = float(row['SL'])
+                        target_price = float(row['Target'])
+
+                        # Fetch Live Price (1-minute data)
+                        live_data = yf.download(ticker, period="1d", interval="1m", progress=False)
+                        if live_data.empty: continue
+                        
+                        live_price = float(live_data['Close'].iloc[-1].iloc[0] if isinstance(live_data.columns, pd.MultiIndex) else live_data['Close'].iloc[-1])
+
+                        # ==========================
+                        # 📈 BUY TRADE LOGIC
+                        # ==========================
+                        if action == 'BUY':
+                            risk = entry_price - sl_price
+                            reward_level = entry_price + risk # 1:1 Profit Level
+                            
+                            if live_price >= target_price:
+                                df.at[index, 'Status'] = 'CLOSED (TARGET)'
+                                bot.send_message(chat_id, f"🎯 **TARGET HIT!**\n{ticker} BUY trade closed at ₹{live_price:.2f}. Profit Booked! 💸", parse_mode='Markdown')
+                                changes_made = True
+                                
+                            elif live_price <= sl_price:
+                                df.at[index, 'Status'] = 'CLOSED (SL)'
+                                bot.send_message(chat_id, f"🛑 **STOP LOSS HIT!**\n{ticker} BUY trade closed at ₹{live_price:.2f}.", parse_mode='Markdown')
+                                changes_made = True
+                                
+                            elif live_price >= reward_level and sl_price < entry_price:
+                                df.at[index, 'SL'] = entry_price
+                                bot.send_message(chat_id, f"🛡️ **TRAILING SL ACTIVATED!**\n{ticker} has reached 1:1 Reward.\nMoved SL to Entry Price (₹{entry_price:.2f}). Your risk is now ZERO! 😎", parse_mode='Markdown')
+                                changes_made = True
+
+                        # ==========================
+                        # 📉 SELL TRADE LOGIC
+                        # ==========================
+                        elif action == 'SELL':
+                            risk = sl_price - entry_price
+                            reward_level = entry_price - risk # 1:1 Profit Level
+                            
+                            if live_price <= target_price:
+                                df.at[index, 'Status'] = 'CLOSED (TARGET)'
+                                bot.send_message(chat_id, f"🎯 **TARGET HIT!**\n{ticker} SELL trade closed at ₹{live_price:.2f}. Profit Booked! 💸", parse_mode='Markdown')
+                                changes_made = True
+                                
+                            elif live_price >= sl_price:
+                                df.at[index, 'Status'] = 'CLOSED (SL)'
+                                bot.send_message(chat_id, f"🛑 **STOP LOSS HIT!**\n{ticker} SELL trade closed at ₹{live_price:.2f}.", parse_mode='Markdown')
+                                changes_made = True
+                                
+                            elif live_price <= reward_level and sl_price > entry_price:
+                                df.at[index, 'SL'] = entry_price
+                                bot.send_message(chat_id, f"🛡️ **TRAILING SL ACTIVATED!**\n{ticker} has reached 1:1 Reward.\nMoved SL to Entry Price (₹{entry_price:.2f}). Your risk is now ZERO! 😎", parse_mode='Markdown')
+                                changes_made = True
+
+                if changes_made:
+                    df.to_csv("paper_trade_book.csv", index=False)
+
+        except Exception as e:
+            pass # Background errors ko chup-chap ignore karega taaki bot crash na ho
+        
+        time.sleep(60) # Har 60 seconds mein check karega
 if __name__ == "__main__":
-    print("🤖 ULTIMATE Jarvis is starting...")
-    
-    # Flask web server ko background thread mein start karo
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.start()
-
-
-    
-    
-    # Telegram bot ko main thread mein start karo
-    bot.polling(none_stop=True)
+    threading.Thread(target=run_flask).start()
+    bot.infinity_polling()

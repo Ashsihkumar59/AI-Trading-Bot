@@ -4,88 +4,93 @@ import numpy as np
 import pandas as pd
 
 class StockTradingEnv(gym.Env):
-    """A stock trading environment with Volume Features & Balanced Psychology"""
-    metadata = {'render.modes': ['human']}
+    """🤖 Jarvis Ultra-Pro AI Trading Environment"""
+    metadata = {'render_modes': ['human']}
 
     def __init__(self, df):
         super(StockTradingEnv, self).__init__()
+
+        # Data ko reset kar rahe hain taaki index 0 se shuru ho
+        self.df = df.reset_index(drop=True)
         
-        self.df = df
-        self.reward_range = (-np.inf, np.inf)
-        
-        # 🚨 Ab 11 Features hain (OBV aur Volume_Trend add ho gaye)
-       # 🚨 14 Ultimate Features (Macro Trend + S&R add ho gaye)
+        # 🚨 THE 14-POINT RADAR FEATURES 🚨
         self.features = [
             'Close', 'RSI_14', 'MACD', 'EMA_50', 'ATR_14', 'Body', 
             'Upper_Wick', 'Lower_Wick', 'Color', 'OBV', 'Volume_Trend', 
             'Macro_Trend', 'Dist_to_Resistance', 'Dist_to_Support'
         ]
         
+        # Actions: 0 = HOLD, 1 = BUY, 2 = SELL
         self.action_space = spaces.Discrete(3)
+        
+        # AI ki Aankhein: 14 Features dekhne ke liye Box Space
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(len(self.features),), dtype=np.float32)
-
-        self.initial_balance = 100000
-        # Transaction cost wapas normal ki hai taaki normal trading kare
-        self.transaction_cost = 0.002 
+            low=-np.inf, high=np.inf, shape=(14,), dtype=np.float32
+        )
+        
+        # Virtual Account Details (Training ke liye ₹1 Lakh ki capital)
+        self.initial_balance = 100000.0 
+        self.balance = self.initial_balance
+        self.shares_held = 0
+        self.net_worth = self.initial_balance
+        self.current_step = 0
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        
         self.balance = self.initial_balance
-        self.net_worth = self.initial_balance
         self.shares_held = 0
+        self.net_worth = self.initial_balance
         self.current_step = 0
-        
-        self.total_trades = 0
-        self.max_net_worth = self.initial_balance
-        self.total_asset = self.initial_balance  # Testing script ke liye
         
         return self._next_observation(), {}
 
     def _next_observation(self):
-        obs = self.df[self.features].iloc[self.current_step].values
-        return obs.astype(np.float32)
+        # Current step ka data uthao
+        obs = self.df.loc[self.current_step, self.features].values.astype(np.float32)
+        
+        # Agar koi data missing (NaN) ho toh use 0 kar do (AI crash na ho)
+        obs = np.nan_to_num(obs)
+        return obs
 
     def step(self, action):
-        current_price = self.df['Close'].iloc[self.current_step]
+        current_price = self.df.loc[self.current_step, 'Close']
         prev_net_worth = self.net_worth
-
-        # Execute Action
-        if action == 1: # BUY
-            if self.balance > 0: # Sirf tab kharido jab paisa ho (Over-buying block)
-                shares_bought = self.balance / (current_price * (1 + self.transaction_cost))
+        
+        # ⚙️ EXECUTE ACTION
+        if action == 1: # 🟢 BUY
+            if self.balance > current_price:
+                # Jitne shares aa sakte hain, kharid lo
+                shares_bought = int(self.balance / current_price)
+                self.balance -= shares_bought * current_price
                 self.shares_held += shares_bought
-                self.balance -= shares_bought * current_price * (1 + self.transaction_cost)
-                self.total_trades += 1
-            
-        elif action == 2: # SELL
-            if self.shares_held > 0: # Sirf tab becho jab shares hon
-                self.balance += self.shares_held * current_price * (1 - self.transaction_cost)
+                
+        elif action == 2: # 🔴 SELL
+            if self.shares_held > 0:
+                # Saare shares bech do
+                self.balance += self.shares_held * current_price
                 self.shares_held = 0
-                self.total_trades += 1
-            
-        # Calculate Net Worth
+        
+        # 🧮 NET WORTH & REWARD CALCULATION
         self.net_worth = self.balance + (self.shares_held * current_price)
-        self.total_asset = self.net_worth
         
-        if self.net_worth > self.max_net_worth:
-            self.max_net_worth = self.net_worth
-
-        # ==========================================
-        # 🧠 BALANCED REWARD SYSTEM (AI PSYCHOLOGY)
-        # ==========================================
-        reward = self.net_worth - prev_net_worth  
+        # Reward = Profit ya Loss (Net worth kitni badhi ya ghati)
+        reward = self.net_worth - prev_net_worth
         
-        # Loss mein hold karne par halka sa dard (Panic nahi)
-        if self.net_worth < self.initial_balance:
-            reward -= 1 
-            
         self.current_step += 1
         
-        terminated = self.net_worth <= 0 or self.current_step >= len(self.df) - 1
+        # Check karo kya data khatam ho gaya?
+        terminated = self.current_step >= len(self.df) - 1
+        
+        # Agar capital 0 ho gayi (Bankrupt), toh training rok do
+        if self.net_worth <= 0:
+            terminated = True
+            
         truncated = False
         
-        obs = self._next_observation()
+        info = {
+            'step': self.current_step,
+            'net_worth': self.net_worth,
+            'action': action
+        }
         
-        return obs, reward, terminated, truncated, {}
+        return self._next_observation(), float(reward), terminated, truncated, info
